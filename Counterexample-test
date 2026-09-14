@@ -1,0 +1,325 @@
+// Counterexample test for truncated UOV Hilbert coefficients.
+//
+// Inputs: n, o, m, q=p^e, ell, t, printTableIfHit
+//
+// Main procedure:
+//   RunCounterexampleExperiment(n, o, m, q, ell, t, printTableIfHit);
+
+function PrimePowerInfo(q)
+	F := Factorization(Integers()!q);
+	if #F ne 1 then
+		error "q must be a prime power p^e.";
+	end if;
+	return F[1][1], F[1][2];
+end function;
+
+function TruncatedCoeffBounded(n, pL, d)
+	// Coefficient of z^d in (1 + z + ... + z^(pL-1))^n.
+	if d lt 0 then
+		return 0;
+	end if;
+
+	if n eq 0 then
+		return d eq 0 select 1 else 0;
+	end if;
+
+	s := pL;
+	maxj := Minimum(n, d div s);
+	ans := 0;
+	for j in [0..maxj] do
+		t := d - j*s;
+		ans +:= ((j mod 2) eq 0 select 1 else -1) * Binomial(n, j) * Binomial(n + t - 1, t);
+	end for;
+	return ans;
+end function;
+
+function BoundedExponentVectors(n, d, maxExp)
+	// Copied/adapted from T_compare.m: enumerate exponent vectors
+	// (e_1,...,e_n) with sum e_i = d and 0 <= e_i <= maxExp.
+	if n eq 1 then
+		if d ge 0 and d le maxExp then
+			return [[d]];
+		else
+			return [];
+		end if;
+	end if;
+
+	res := [];
+	upper := Minimum(maxExp, d);
+	for a in [0..upper] do
+		tails := BoundedExponentVectors(n-1, d-a, maxExp);
+		for t in tails do
+			Append(~res, [a] cat t);
+		end for;
+	end for;
+	return res;
+end function;
+
+function PolyMulTrunc(A, B, maxDeg)
+	C := [0 : i in [0..maxDeg]];
+	da := #A - 1;
+	db := #B - 1;
+	for i in [0..Minimum(da, maxDeg)] do
+		if A[i+1] eq 0 then
+			continue;
+		end if;
+		limj := Minimum(db, maxDeg - i);
+		for j in [0..limj] do
+			if B[j+1] ne 0 then
+				C[i+j+1] +:= A[i+1] * B[j+1];
+			end if;
+		end for;
+	end for;
+	return C;
+end function;
+
+function SeriesInverse(B, maxDeg)
+	// Return C with B*C = 1 mod z^(maxDeg+1), assuming B[0] = 1.
+	if not (#B ge 1 and B[1] eq 1) then
+		error "Series inverse requires constant term 1.";
+	end if;
+
+	C := [0 : i in [0..maxDeg]];
+	C[1] := 1;
+	degB := #B - 1;
+
+	for d in [1..maxDeg] do
+		s := 0;
+		lim := Minimum(d, degB);
+		for i in [1..lim] do
+			if B[i+1] ne 0 then
+				s +:= B[i+1] * C[d-i+1];
+			end if;
+		end for;
+		C[d+1] := -s;
+	end for;
+	return C;
+end function;
+
+function BuildNumeratorCoeffs(n, pL, maxDeg)
+	A := [0 : i in [0..maxDeg]];
+	for d in [0..maxDeg] do
+		A[d+1] := TruncatedCoeffBounded(n, pL, d);
+	end for;
+	return A;
+end function;
+
+function BuildDenominatorCoeffs(m, pL, maxDeg)
+	// Coefficients of (1 + z^2 + ... + z^(2(pL-1)))^m.
+	B := [0 : i in [0..maxDeg]];
+	B[1] := 1;
+	for d in [1..maxDeg] do
+		if (d mod 2) eq 0 then
+			t := d div 2;
+			B[d+1] := TruncatedCoeffBounded(m, pL, t);
+		end if;
+	end for;
+	return B;
+end function;
+
+function BuildT1Coeffs(n, m, pL, maxDeg)
+	// H1(z) = [ A(z)/B(z) ]_+, keep coefficients until first negative.
+	A := BuildNumeratorCoeffs(n, pL, maxDeg);
+	B := BuildDenominatorCoeffs(m, pL, maxDeg);
+	Binv := SeriesInverse(B, maxDeg);
+	C := PolyMulTrunc(A, Binv, maxDeg);
+
+	Cplus := [0 : i in [0..maxDeg]];
+	active := true;
+	for d in [0..maxDeg] do
+		if active and C[d+1] ge 0 then
+			Cplus[d+1] := C[d+1];
+		else
+			active := false;
+			Cplus[d+1] := 0;
+		end if;
+	end for;
+	return Cplus;
+end function;
+
+function ExpKey(exp)
+	return Sprint(exp);
+end function;
+
+function ExpToMonomial(vars, exp)
+	mon := Parent(vars[1])!1;
+	for i in [1..#vars] do
+		if exp[i] ne 0 then
+			mon *:= vars[i]^exp[i];
+		end if;
+	end for;
+	return mon;
+end function;
+
+function RandomUOVQuadratics(P, F, n, o, m)
+	vars := [P.i : i in [1..n]];
+	gens := [* *];
+	for k in [1..m] do
+		f := P!0;
+		for i in [1..n-o] do
+			for j in [i..n] do
+				c := Random(F);
+				if c ne 0 then
+					f +:= c * vars[i] * vars[j];
+				end if;
+			end for;
+		end for;
+		Append(~gens, f);
+	end for;
+	return gens;
+end function;
+
+function QuotientHilbertCoeff(F, P, gens, n, pL, d)
+	// Return dim(R_d / I_d), where R = F[x]/(x_i^pL).
+	if d lt 0 then
+		return 0;
+	end if;
+
+	Bd := BoundedExponentVectors(n, d, pL - 1);
+	dimR := #Bd;
+	if d lt 2 then
+		return dimR;
+	end if;
+
+	Bdm2 := BoundedExponentVectors(n, d - 2, pL - 1);
+	index := AssociativeArray();
+	for idx in [1..#Bd] do
+		index[ExpKey(Bd[idx])] := idx;
+	end for;
+
+	vars := [P.i : i in [1..n]];
+	rows := [* *];
+
+	for f in gens do
+		for e in Bdm2 do
+			g := f * ExpToMonomial(vars, e);
+			row := [F!0 : i in [1..dimR]];
+
+			mons := Monomials(g);
+			coeffs := Coefficients(g);
+			for k in [1..#mons] do
+				ev := Exponents(mons[k]);
+
+				valid := true;
+				sumDeg := 0;
+				for i in [1..n] do
+					if ev[i] ge pL then
+						valid := false;
+						break;
+					end if;
+					sumDeg +:= ev[i];
+				end for;
+
+				if valid and sumDeg eq d then
+					key := ExpKey(ev);
+					if IsDefined(index, key) then
+						row[index[key]] +:= coeffs[k];
+					end if;
+				end if;
+			end for;
+
+			if &or[c ne 0 : c in row] then
+				Append(~rows, row);
+			end if;
+		end for;
+	end for;
+
+	if #rows eq 0 then
+		return dimR;
+	end if;
+
+	flat := [F!0 : i in [1..0]];
+	for r in rows do
+		flat cat:= r;
+	end for;
+	M := Matrix(F, #rows, dimR, flat);
+	dimI := Rank(M);
+	return dimR - dimI;
+end function;
+
+procedure PrintHitTable(runIdx, D, n, o, m, q, ell, pL, Tuov, T1, To)
+	printf "\n--- Counterexample at run %o ---\n", runIdx;
+	printf "params: n=%o, o=%o, m=%o, q=%o, ell=%o, p^ell=%o, D=%o\n", n, o, m, q, ell, pL, D;
+	printf "%-6o %-16o %-16o %-16o\n", "d", "T_uov", "T1", "T(o,...)";
+	maxDeg := #To - 1;
+	for d in [2..maxDeg] do
+		printf "%-6o %-16o %-16o %-16o\n", d, Tuov[d+1], T1[d+1], To[d+1];
+	end for;
+end procedure;
+
+procedure RunCounterexampleExperiment(: n := 16, o := 4, m := 16, q := 4, ell := 1, t := 20, printTableIfHit := true)
+	if not (n gt 0 and o gt 0 and m gt 0 and t gt 0 and ell gt 0) then
+		error "Need n,o,m,ell,t > 0.";
+	end if;
+	if o gt n then
+		error "Need o <= n.";
+	end if;
+
+	p, e := PrimePowerInfo(q);
+	if q ne p^e then
+		error "q must be exactly p^e.";
+	end if;
+
+	F := GF(q);
+	P<x1> := PolynomialRing(F, n);
+	pL := p^ell;
+	maxDeg := o * (pL - 1);
+
+	if maxDeg lt 2 then
+		print "No degree d in [2..o(p^ell-1)].";
+		return;
+	end if;
+
+	T1 := BuildT1Coeffs(n, m, pL, maxDeg);
+	To := [0 : i in [0..maxDeg]];
+	for d in [0..maxDeg] do
+		To[d+1] := TruncatedCoeffBounded(o, pL, d);
+	end for;
+
+	D := -1;
+	for d in [2..maxDeg] do
+		if T1[d+1] le To[d+1] then
+			D := d;
+			break;
+		end if;
+	end for;
+
+	if D eq -1 then
+		printf "No D found in [2..%o] with T1(d) <= T(o,...,d).\n", maxDeg;
+		return;
+	end if;
+
+	printf "Parameters: n=%o, o=%o, m=%o, q=%o(=%o^%o), ell=%o, t=%o\n", n, o, m, q, p, e, ell, t;
+	printf "Computed D = %o, T1(D) = %o, T(o,...,D) = %o\n", D, T1[D+1], To[D+1];
+
+	hits := 0;
+	for runIdx in [1..t] do
+		gens := RandomUOVQuadratics(P, F, n, o, m);
+
+		TuovD := QuotientHilbertCoeff(F, P, gens, n, pL, D);
+		if TuovD gt To[D+1] then
+			hits +:= 1;
+			printf "Run %o: hit, T_uov(D)=%o > T(o,...,D)=%o\n", runIdx, TuovD, To[D+1];
+
+			if printTableIfHit then
+				Tuov := [0 : i in [0..maxDeg]];
+				for d in [0..maxDeg] do
+					Tuov[d+1] := QuotientHilbertCoeff(F, P, gens, n, pL, d);
+				end for;
+				PrintHitTable(runIdx, D, n, o, m, q, ell, pL, Tuov, T1, To);
+			end if;
+		else
+			printf "Run %o: no hit, T_uov(D)=%o <= %o\n", runIdx, TuovD, To[D+1];
+		end if;
+	end for;
+
+	printf "\nSummary: hits = %o / %o\n", hits, t;
+end procedure;
+
+// --------------------------
+// Example usage
+// --------------------------
+// printTableIfHit := true;   // set false to disable detailed table
+// RunCounterexampleExperiment(: n := 6, o := 4, m :=3, q := 2, ell := 1, t := 1000, printTableIfHit := true);
+
+//RunCounterexampleExperiment(: n := 9, o := 4, m :=4, q := 16, ell := 2, t := 100, printTableIfHit := true);
